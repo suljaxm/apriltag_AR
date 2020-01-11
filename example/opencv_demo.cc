@@ -29,6 +29,7 @@ either expressed or implied, of the Regents of The University of Michigan.
 
 #include "opencv2/opencv.hpp"
 #include "apriltag_pose.h"
+#include <opencv2/viz.hpp>
 
 extern "C" {
 #include "apriltag.h"
@@ -95,6 +96,7 @@ int main(int argc, char *argv[])
     td->refine_edges = getopt_get_bool(getopt, "refine-edges");
 
     Mat frame, gray;
+    double t[3] = {0}, R[9] = {1,0,0,0,1,0,0,0,1};
     while (true) {
         cap >> frame;
         cvtColor(frame, gray, COLOR_BGR2GRAY);
@@ -123,8 +125,11 @@ int main(int argc, char *argv[])
 			cout << wx <<"  "<< wy << " " << wz << endl;
             double dist = sqrt( wx*wx + wy*wy + wz*wz );
             cout << "distance = " << dist << endl;
-			// cout << pose.R->nrows <<" "<< pose.R->ncols << endl;  //3*3
-            
+			cout << "R size:" << pose.R->nrows <<" "<< pose.R->ncols << endl;  //3*3
+            cout << "R:" << endl;
+            cout << pose.R->data[0] <<" "<< pose.R->data[1] << " " << pose.R->data[2] << endl;  //3*3
+            cout << pose.R->data[3] <<" "<< pose.R->data[4] << " " << pose.R->data[5] << endl;  //3*3
+            cout << pose.R->data[6] <<" "<< pose.R->data[7] << " " << pose.R->data[8] << endl;  //3*3
             line(frame, Point(det->p[0][0], det->p[0][1]),
                      Point(det->p[1][0], det->p[1][1]),
                      Scalar(0, 0xff, 0), 2);
@@ -150,12 +155,44 @@ int main(int argc, char *argv[])
                                        det->c[1]+textsize.height/2),
                     fontface, fontscale, Scalar(0xff, 0x99, 0), 2);
             
+            t[0] = wx;
+            t[1] = wy;
+            t[2] = wz;
+            for( int i = 0; i < 9; i++ ){
+                R[i] = pose.R->data[i];
+            }
 
         }
         apriltag_detections_destroy(detections);
 
         imshow("Tag Detections", frame);
 
+        // visualization
+        cv::viz::Viz3d vis ( "Visual Odometry" );
+        cv::viz::WCoordinateSystem world_coor ( 1.0 ), camera_coor ( 0.5 );
+        cv::Point3d cam_pos ( 0, -1.0, -1.0 ), cam_focal_point ( 0,0,0 ), cam_y_dir ( 0,1,0 );
+        cv::Affine3d cam_pose = cv::viz::makeCameraPose ( cam_pos, cam_focal_point, cam_y_dir );
+        vis.setViewerPose ( cam_pose );
+
+        world_coor.setRenderingProperty ( cv::viz::LINE_WIDTH, 2.0 );
+        camera_coor.setRenderingProperty ( cv::viz::LINE_WIDTH, 1.0 );
+        vis.showWidget ( "World", world_coor );
+        vis.showWidget ( "Camera", camera_coor );
+
+        // show the map and the camera pose
+        cv::Affine3d M (
+            cv::Affine3d::Mat3 (
+                R[0], R[1], R[2],
+                R[3], R[4], R[5],
+                R[6], R[7], R[8]
+                ),
+            cv::Affine3d::Vec3 (
+                t[0], t[1], t[2]
+            )
+        );
+
+        vis.setWidgetPose ( "Camera", M );
+        vis.spinOnce ( 1, false );
         
 
         if (waitKey(30) >= 0)
