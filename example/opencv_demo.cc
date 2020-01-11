@@ -26,11 +26,12 @@ either expressed or implied, of the Regents of The University of Michigan.
 */
 
 #include <iostream>
+#include <Eigen/Core>
 
 #include "opencv2/opencv.hpp"
+#include "opencv2/core/eigen.hpp"
 #include "apriltag_pose.h"
 #include <pangolin/pangolin.h>
-#include <Eigen/Core>
 #include <sophus/se3.h>
 #include <boost/format.hpp>
 
@@ -40,14 +41,12 @@ extern "C" {
 #include "common/getopt.h"
 }
 
-using namespace std;
-using namespace cv;
 
-Eigen::Matrix3d R;
-Eigen::Vector3d t;
+Eigen::Matrix3d cam_R;
+Eigen::Vector3d cam_t;
 
-typedef vector<Sophus::SE3, Eigen::aligned_allocator<Sophus::SE3> > VecSE3;
-typedef vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > VecVec3d;
+typedef std::vector<Sophus::SE3, Eigen::aligned_allocator<Sophus::SE3> > VecSE3;
+typedef std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > VecVec3d;
 
 // plot the poses and points for you, need pangolin
 void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_info_t &info);
@@ -73,9 +72,9 @@ int main(int argc, char *argv[])
     }
 
     // Initialize camera
-    VideoCapture cap(1);
+    cv::VideoCapture cap(1);
     if (!cap.isOpened()) {
-        cerr << "Couldn't open video capture device" << endl;
+        std::cerr << "Couldn't open video capture device" << std::endl;
         return -1;
     }
 
@@ -90,11 +89,22 @@ int main(int argc, char *argv[])
     }
 
     apriltag_detection_info_t info;
-	info.tagsize = 0.02;
-	info.fx = 611.963;
-	info.fy = 611.963;
-	info.cx = 309.007;
-	info.cy = 242.101;
+    info.tagsize = 13.8; //cm
+    info.fx = 9.7185090185201193e+02;
+    info.fy = 9.3550247129566696e+02;
+    info.cx = 3.2389824020348124e+02;
+    info.cy = 2.1394131657430057e+02;
+
+    double camera_matrix[] =
+    {
+        info.fx,    0.0,       info.cx,
+        0.0,        info.fy,   info.cy,
+        0.0,        0.0,       1.0
+    };
+    double dist_coeff[] = {-1.0351230255308908e+00, -1.9662350850900434e+00, 0.0, 0.0};
+
+    cv::Mat m_camera_matrix = cv::Mat(3, 3, CV_64FC1, camera_matrix).clone();
+    cv::Mat m_dist_coeff = cv::Mat(1, 4, CV_64FC1, dist_coeff).clone();
 
 
     apriltag_detector_t *td = apriltag_detector_create();
@@ -105,13 +115,13 @@ int main(int argc, char *argv[])
     td->debug = getopt_get_bool(getopt, "debug");
     td->refine_edges = getopt_get_bool(getopt, "refine-edges");
 
-    Mat frame, gray;
+    cv::Mat frame, gray;
     VecSE3 poses;
     VecVec3d points;
 
     while (true) {
         cap >> frame;
-        cvtColor(frame, gray, COLOR_BGR2GRAY);
+        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
 
         // Make an image_u8_t header for the Mat data
         image_u8_t im = { .width = gray.cols,
@@ -131,52 +141,128 @@ int main(int argc, char *argv[])
             apriltag_pose_t pose;
 			double err = estimate_tag_pose(&info, &pose);
             double wx, wy, wz;
-            wx = pose.t->data[0];
-            wy = pose.t->data[1];
-            wz = pose.t->data[2];
-			cout << wx <<"  "<< wy << " " << wz << endl;
-            double dist = sqrt( wx*wx + wy*wy + wz*wz );
-            cout << "distance = " << dist << endl;
-			cout << "R size:" << pose.R->nrows <<" "<< pose.R->ncols << endl;  //3*3
-            cout << "R:" << endl;
-            cout << pose.R->data[0] <<" "<< pose.R->data[1] << " " << pose.R->data[2] << endl;  //3*3
-            cout << pose.R->data[3] <<" "<< pose.R->data[4] << " " << pose.R->data[5] << endl;  //3*3
-            cout << pose.R->data[6] <<" "<< pose.R->data[7] << " " << pose.R->data[8] << endl;  //3*3
-            line(frame, Point(det->p[0][0], det->p[0][1]),
-                     Point(det->p[1][0], det->p[1][1]),
-                     Scalar(0, 0xff, 0), 2);
-            line(frame, Point(det->p[0][0], det->p[0][1]),
-                     Point(det->p[3][0], det->p[3][1]),
-                     Scalar(0, 0, 0xff), 2);
-            line(frame, Point(det->p[1][0], det->p[1][1]),
-                     Point(det->p[2][0], det->p[2][1]),
-                     Scalar(0xff, 0, 0), 2);
-            line(frame, Point(det->p[2][0], det->p[2][1]),
-                     Point(det->p[3][0], det->p[3][1]),
-                     Scalar(0xff, 0, 0), 2);
 
-            stringstream ss;
+            double scale = 107.0/220.0;  //depth scale = realvalue / measurement = 107cm/220
+
+            wx = pose.t->data[0]*scale;
+            wy = pose.t->data[1]*scale;
+            wz = pose.t->data[2]*scale;
+			// cout << wx <<"  "<< wy << " " << wz << endl;
+            
+            double depth = sqrt( wx*wx + wy*wy + wz*wz );
+            
+            // cout << "depth = " << depth << endl;
+			// cout << "R size:" << pose.R->nrows <<" "<< pose.R->ncols << endl;  //3*3
+            // cout << "R:" << endl;
+            // cout << pose.R->data[0] <<" "<< pose.R->data[1] << " " << pose.R->data[2] << endl;  //3*3
+            // cout << pose.R->data[3] <<" "<< pose.R->data[4] << " " << pose.R->data[5] << endl;  //3*3
+            // cout << pose.R->data[6] <<" "<< pose.R->data[7] << " " << pose.R->data[8] << endl;  //3*3
+            cv::line(frame, cv::Point(det->p[0][0], det->p[0][1]),
+                     cv::Point(det->p[1][0], det->p[1][1]),
+                     cv::Scalar(0xff, 0xff, 0xff), 2);
+            cv::line(frame, cv::Point(det->p[0][0], det->p[0][1]),
+                     cv::Point(det->p[3][0], det->p[3][1]),
+                     cv::Scalar(0xff, 0xff, 0xff), 2);
+            cv::line(frame, cv::Point(det->p[1][0], det->p[1][1]),
+                     cv::Point(det->p[2][0], det->p[2][1]),
+                     cv::Scalar(0xff, 0xff, 0xff), 2);
+            cv::line(frame, cv::Point(det->p[2][0], det->p[2][1]),
+                     cv::Point(det->p[3][0], det->p[3][1]),
+                     cv::Scalar(0xff, 0xff, 0xff), 2);
+
+            cv::circle(frame, cv::Point(det->p[0][0], det->p[0][1]),
+                2,
+                cv::Scalar(0xff, 0xff, 0), 2); 
+
+            std::stringstream ss;
             ss << det->id;
-            String text = ss.str();
-            int fontface = FONT_HERSHEY_SCRIPT_SIMPLEX;
+            cv::String text = ss.str();
+            int fontface = cv::FONT_HERSHEY_SCRIPT_SIMPLEX;
             double fontscale = 1.0;
             int baseline;
-            Size textsize = getTextSize(text, fontface, fontscale, 2,
+            cv::Size textsize = getTextSize(text, fontface, fontscale, 2,
                                             &baseline);
-            putText(frame, text, Point(det->c[0]-textsize.width/2,
+            putText(frame, text, cv::Point(det->c[0]-textsize.width/2,
                                        det->c[1]+textsize.height/2),
-                    fontface, fontscale, Scalar(0xff, 0x99, 0), 2);
-            
-            t << wx, wy, wz;
-            R << pose.R->data[0], pose.R->data[1], pose.R->data[2],
+                    fontface, fontscale, cv::Scalar(0xff, 0x99, 0), 2);
+
+
+            cam_t << wx, wy, wz;
+            cam_R << pose.R->data[0], pose.R->data[1], pose.R->data[2],
                 pose.R->data[3], pose.R->data[4], pose.R->data[5],
                 pose.R->data[6], pose.R->data[7], pose.R->data[8];
+            
 
-            Sophus::SE3 SE3_Rt( R, t );
+            // three-dimensional cube test (cudePoints)
+            std::vector< cv::Point3f > cubePoints;
+            cubePoints.push_back(cv::Point3f(-0.5, -0.5, 0.0));
+            cubePoints.push_back(cv::Point3f( 0.5, -0.5, 0.0));
+            cubePoints.push_back(cv::Point3f( 0.5,  0.5, 0.0));
+            cubePoints.push_back(cv::Point3f(-0.5,  0.5, 0.0));
+            cubePoints.push_back(cv::Point3f(-0.5, -0.5, 1.0));
+            cubePoints.push_back(cv::Point3f( 0.5, -0.5, 1.0));
+            cubePoints.push_back(cv::Point3f( 0.5,  0.5, 1.0));
+            cubePoints.push_back(cv::Point3f(-0.5,  0.5, 1.0));
+
+            for ( auto &p:cubePoints ){
+                p = p*5;
+            }
+
+            std::vector< cv::Point2f > imagePoints;
+            bool 
+            cv::Mat cv_cam_R, cv_cam_t;
+            cv::eigen2cv(cam_R, cv_cam_R);
+            cv::eigen2cv(cam_t, cv_cam_t);
+            cv::projectPoints(cubePoints, cv_cam_R, cv_cam_t, m_camera_matrix, m_dist_coeff, imagePoints);
+            // draw cube lines
+            cv::line(frame, imagePoints[0], imagePoints[1], cv::Scalar(0, 0, 0xff), 2);
+            cv::line(frame, imagePoints[1], imagePoints[2], cv::Scalar(0, 0, 0xff), 2);
+            cv::line(frame, imagePoints[2], imagePoints[3], cv::Scalar(0, 0, 0xff), 2);
+            cv::line(frame, imagePoints[3], imagePoints[0], cv::Scalar(0, 0, 0xff), 2);
+
+            cv::line(frame, imagePoints[4], imagePoints[5], cv::Scalar(0xff, 0, 0), 2);
+            cv::line(frame, imagePoints[5], imagePoints[6], cv::Scalar(0xff, 0, 0), 2);
+            cv::line(frame, imagePoints[6], imagePoints[7], cv::Scalar(0xff, 0, 0), 2);
+            cv::line(frame, imagePoints[7], imagePoints[4], cv::Scalar(0xff, 0, 0), 2);
+
+            cv::line(frame, imagePoints[0], imagePoints[4], cv::Scalar(0, 0xff, 0), 2);
+            cv::line(frame, imagePoints[1], imagePoints[5], cv::Scalar(0, 0xff, 0), 2);
+            cv::line(frame, imagePoints[2], imagePoints[6], cv::Scalar(0, 0xff, 0), 2);
+            cv::line(frame, imagePoints[3], imagePoints[7], cv::Scalar(0, 0xff, 0), 2);
+
+
+            // Note that every variable that we compute is proportional to the scale factor of H.
+            // or pnp, cv::solvePnP  cv::Rodrigues
+
+            double H00 = MATD_EL(det->H, 0, 0);
+            double H01 = MATD_EL(det->H, 0, 1);
+            double H02 = MATD_EL(det->H, 0, 2);
+            double H10 = MATD_EL(det->H, 1, 0);
+            double H11 = MATD_EL(det->H, 1, 1);
+            double H12 = MATD_EL(det->H, 1, 2);
+            double H20 = MATD_EL(det->H, 2, 0);
+            double H21 = MATD_EL(det->H, 2, 1);
+            double H22 = MATD_EL(det->H, 2, 2);
+            // cout << "H = " << H00 << " " << H01 << endl;
+            
+
+
+            Sophus::SE3 SE3_Rt( cam_R, cam_t );
             poses.push_back( SE3_Rt );
             for( int i = 0; i < 4; i++ ){
-                points.push_back( Eigen::Vector3d( det->p[i][0], det->p[i][1], 0 ) );
+                Eigen::Vector3d p_tag_c, p_tag_w;
+                p_tag_c[2] = depth;
+                p_tag_c[0] = ( det->p[i][0] - info.cx )*p_tag_c[2]/info.fx;
+                p_tag_c[1] = ( det->p[i][1] - info.cy )*p_tag_c[2]/info.fy;
+                p_tag_w = SE3_Rt.inverse()*p_tag_c;
+                points.push_back( p_tag_w );
+                if( i == 0 ){
+                    // cout << "p_tag_c: " << p_tag_c.transpose() << endl;
+                    // cout << "p_tag_w: " << p_tag_w.transpose() << endl;
+                }
             }
+
+
         }
         
 
@@ -185,7 +271,7 @@ int main(int argc, char *argv[])
 
         imshow("Tag Detections", frame);
 
-        if (waitKey(30) == 'q')
+        if (cv::waitKey(30) == 'q')
             break;
     }
 
@@ -203,10 +289,10 @@ int main(int argc, char *argv[])
 }
 
 void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_info_t &info) {
-    // if (poses.empty() || points.empty()) {
-    //     cerr << "parameter is empty!" << endl;
-    //     return;
-    // }
+    if (poses.empty() || points.empty()) {
+        std::cerr << "parameter is empty!" << std::endl;
+        return;
+    }
 
     // create pangolin window and plot the trajectory
     pangolin::CreateWindowAndBind("Trajectory Viewer", 1024, 768);
