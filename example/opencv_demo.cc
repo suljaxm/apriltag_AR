@@ -29,7 +29,10 @@ either expressed or implied, of the Regents of The University of Michigan.
 
 #include "opencv2/opencv.hpp"
 #include "apriltag_pose.h"
-#include <opencv2/viz.hpp>
+#include <pangolin/pangolin.h>
+#include <Eigen/Core>
+#include <sophus/se3.h>
+#include <boost/format.hpp>
 
 extern "C" {
 #include "apriltag.h"
@@ -40,7 +43,14 @@ extern "C" {
 using namespace std;
 using namespace cv;
 
-Mat r, t;
+Eigen::Matrix3d R;
+Eigen::Vector3d t;
+
+typedef vector<Sophus::SE3, Eigen::aligned_allocator<Sophus::SE3> > VecSE3;
+typedef vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > VecVec3d;
+
+// plot the poses and points for you, need pangolin
+void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_info_t &info);
 
 int main(int argc, char *argv[])
 {
@@ -96,7 +106,9 @@ int main(int argc, char *argv[])
     td->refine_edges = getopt_get_bool(getopt, "refine-edges");
 
     Mat frame, gray;
-    double t[3] = {0}, R[9] = {1,0,0,0,1,0,0,0,1};
+    VecSE3 poses;
+    VecVec3d points;
+
     while (true) {
         cap >> frame;
         cvtColor(frame, gray, COLOR_BGR2GRAY);
@@ -155,57 +167,115 @@ int main(int argc, char *argv[])
                                        det->c[1]+textsize.height/2),
                     fontface, fontscale, Scalar(0xff, 0x99, 0), 2);
             
-            t[0] = wx;
-            t[1] = wy;
-            t[2] = wz;
-            for( int i = 0; i < 9; i++ ){
-                R[i] = pose.R->data[i];
-            }
+            t << wx, wy, wz;
+            R << pose.R->data[0], pose.R->data[1], pose.R->data[2],
+                pose.R->data[3], pose.R->data[4], pose.R->data[5],
+                pose.R->data[6], pose.R->data[7], pose.R->data[8];
 
+            Sophus::SE3 SE3_Rt( R, t );
+            poses.push_back( SE3_Rt );
+            for( int i = 0; i < 4; i++ ){
+                points.push_back( Eigen::Vector3d( det->p[i][0], det->p[i][1], 0 ) );
+            }
         }
+        
+
+
         apriltag_detections_destroy(detections);
 
         imshow("Tag Detections", frame);
 
-        // visualization
-        cv::viz::Viz3d vis ( "Visual Odometry" );
-        cv::viz::WCoordinateSystem world_coor ( 1.0 ), camera_coor ( 0.5 );
-        cv::Point3d cam_pos ( 0, -1.0, -1.0 ), cam_focal_point ( 0,0,0 ), cam_y_dir ( 0,1,0 );
-        cv::Affine3d cam_pose = cv::viz::makeCameraPose ( cam_pos, cam_focal_point, cam_y_dir );
-        vis.setViewerPose ( cam_pose );
-
-        world_coor.setRenderingProperty ( cv::viz::LINE_WIDTH, 2.0 );
-        camera_coor.setRenderingProperty ( cv::viz::LINE_WIDTH, 1.0 );
-        vis.showWidget ( "World", world_coor );
-        vis.showWidget ( "Camera", camera_coor );
-
-        // show the map and the camera pose
-        cv::Affine3d M (
-            cv::Affine3d::Mat3 (
-                R[0], R[1], R[2],
-                R[3], R[4], R[5],
-                R[6], R[7], R[8]
-                ),
-            cv::Affine3d::Vec3 (
-                t[0], t[1], t[2]
-            )
-        );
-
-        vis.setWidgetPose ( "Camera", M );
-        vis.spinOnce ( 1, false );
-        
-
-        if (waitKey(30) >= 0)
+        if (waitKey(30) == 'q')
             break;
     }
 
+    Draw(poses, points, info);
     apriltag_detector_destroy(td);
 
     if (!strcmp(famname, "tag36h11")) {
         tag36h11_destroy(tf);
     } 
 
+
     getopt_destroy(getopt);
 
     return 0;
+}
+
+void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_info_t &info) {
+    // if (poses.empty() || points.empty()) {
+    //     cerr << "parameter is empty!" << endl;
+    //     return;
+    // }
+
+    // create pangolin window and plot the trajectory
+    pangolin::CreateWindowAndBind("Trajectory Viewer", 1024, 768);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    pangolin::OpenGlRenderState s_cam(
+            pangolin::ProjectionMatrix(1024, 768, 500, 500, 512, 389, 0.1, 1000),
+            pangolin::ModelViewLookAt(0, -0.1, -1.8, 0, 0, 0, 0.0, -1.0, 0.0)
+    );
+
+    pangolin::View &d_cam = pangolin::CreateDisplay()
+            .SetBounds(0.0, 1.0, pangolin::Attach::Pix(175), 1.0, -1024.0f / 768.0f)
+            .SetHandler(new pangolin::Handler3D(s_cam));
+
+
+    while (pangolin::ShouldQuit() == false) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        d_cam.Activate(s_cam);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+
+        // intrinsics
+        float fx = info.fx;
+        float fy = info.fy;
+        float cx = info.cx;
+        float cy = info.cy;
+
+        // draw poses
+        float sz = 0.1;
+        int width = 640, height = 480;
+        for (auto &Tcw: poses) {
+            glPushMatrix();
+            Sophus::Matrix4f m = Tcw.inverse().matrix().cast<float>();
+            glMultMatrixf((GLfloat *) m.data());
+            glColor3f(1, 0, 0);
+            glLineWidth(2);
+            glBegin(GL_LINES);
+            glVertex3f(0, 0, 0);
+            glVertex3f(sz * (0 - cx) / fx, sz * (0 - cy) / fy, sz);
+            glVertex3f(0, 0, 0);
+            glVertex3f(sz * (0 - cx) / fx, sz * (height - 1 - cy) / fy, sz);
+            glVertex3f(0, 0, 0);
+            glVertex3f(sz * (width - 1 - cx) / fx, sz * (height - 1 - cy) / fy, sz);
+            glVertex3f(0, 0, 0);
+            glVertex3f(sz * (width - 1 - cx) / fx, sz * (0 - cy) / fy, sz);
+            glVertex3f(sz * (width - 1 - cx) / fx, sz * (0 - cy) / fy, sz);
+            glVertex3f(sz * (width - 1 - cx) / fx, sz * (height - 1 - cy) / fy, sz);
+            glVertex3f(sz * (width - 1 - cx) / fx, sz * (height - 1 - cy) / fy, sz);
+            glVertex3f(sz * (0 - cx) / fx, sz * (height - 1 - cy) / fy, sz);
+            glVertex3f(sz * (0 - cx) / fx, sz * (height - 1 - cy) / fy, sz);
+            glVertex3f(sz * (0 - cx) / fx, sz * (0 - cy) / fy, sz);
+            glVertex3f(sz * (0 - cx) / fx, sz * (0 - cy) / fy, sz);
+            glVertex3f(sz * (width - 1 - cx) / fx, sz * (0 - cy) / fy, sz);
+            glEnd();
+            glPopMatrix();
+        }
+
+        // points
+        glPointSize(2);
+        glBegin(GL_POINTS);
+        for (size_t i = 0; i < points.size(); i++) {
+            glColor3f(0.0, points[i][2]/4, 1.0-points[i][2]/4);
+            glVertex3d(points[i][0], points[i][1], points[i][2]);
+        }
+        glEnd();
+
+        pangolin::FinishFrame();
+        usleep(5000);   // sleep 5 ms
+    }
 }
