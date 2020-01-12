@@ -204,16 +204,42 @@ int main(int argc, char *argv[])
             cubePoints.push_back(cv::Point3f( 0.5,  0.5, 1.0));
             cubePoints.push_back(cv::Point3f(-0.5,  0.5, 1.0));
 
-            for ( auto &p:cubePoints ){
-                p = p*5;
-            }
 
             std::vector< cv::Point2f > imagePoints;
-            bool 
+            bool solvePnP_isok = false;
             cv::Mat cv_cam_R, cv_cam_t;
-            cv::eigen2cv(cam_R, cv_cam_R);
-            cv::eigen2cv(cam_t, cv_cam_t);
-            cv::projectPoints(cubePoints, cv_cam_R, cv_cam_t, m_camera_matrix, m_dist_coeff, imagePoints);
+            if ( solvePnP_isok ){
+                cv::Point3f corners_3d[] =
+                {
+                    cv::Point3f(-0.5f, -0.5f, 0),
+                    cv::Point3f(-0.5f,  0.5f, 0),
+                    cv::Point3f( 0.5f,  0.5f, 0),
+                    cv::Point3f( 0.5f, -0.5f, 0)
+                };
+                std::vector<cv::Point3f> m_corners_3d = std::vector<cv::Point3f>(corners_3d, corners_3d + 4);
+                std::vector<cv::Point2f> m_corners;
+                m_corners.push_back(cv::Point2f(det->p[0][0], det->p[0][1]));
+                m_corners.push_back(cv::Point2f(det->p[1][0], det->p[1][1]));
+                m_corners.push_back(cv::Point2f(det->p[2][0], det->p[2][1]));
+                m_corners.push_back(cv::Point2f(det->p[3][0], det->p[3][1]));
+
+                cv::Mat rot_vec;
+                cv::solvePnP(m_corners_3d, m_corners, m_camera_matrix, m_dist_coeff, rot_vec, cv_cam_t);
+                cv::Rodrigues(rot_vec, cv_cam_R);
+                cv::projectPoints(cubePoints, cv_cam_R, cv_cam_t, m_camera_matrix, m_dist_coeff, imagePoints);
+            }else{
+                for ( auto &p:cubePoints ){
+                    p = p*5;
+                }   
+                cv::eigen2cv(cam_R, cv_cam_R);
+                cv::eigen2cv(cam_t, cv_cam_t);
+                cv::projectPoints(cubePoints, cv_cam_R, cv_cam_t, m_camera_matrix, m_dist_coeff, imagePoints);
+            }
+            
+
+
+
+
             // draw cube lines
             cv::line(frame, imagePoints[0], imagePoints[1], cv::Scalar(0, 0, 0xff), 2);
             cv::line(frame, imagePoints[1], imagePoints[2], cv::Scalar(0, 0, 0xff), 2);
