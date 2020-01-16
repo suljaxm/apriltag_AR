@@ -498,7 +498,7 @@ void estimate_tag_pose_orthogonal_iteration(
     matd_t* v[4];
     for (int i = 0; i < 4; i++) {
         v[i] = matd_create_data(3, 1, (double[]) {
-                (info->det->p[i][0] - info->cx)/info->fx, (info->det->p[i][1] - info->cy)/info->fy, 1});
+                (info->det->p[i][0] - info->cx)/info->fx, (info->det->p[i][1] - info->cy)/info->fy, 1}); //camera coordinate system
     }
 
     estimate_pose_for_tag_homography(info, solution1);
