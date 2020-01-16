@@ -56,16 +56,38 @@ Eigen::Vector3d cam_t;
 
 typedef std::vector<Sophus::SE3, Eigen::aligned_allocator<Sophus::SE3> > VecSE3;
 typedef std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > VecVec3d;
-
-// apriltag 4-corner 3d points 
+typedef std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d> > VecVec2d;
+// apriltag 4-corner 3d points and 2d pixel
 VecVec3d tagpoints;
+VecVec2d tagpixels;
 
 double fx = 9.7185090185201193e+02;
 double fy = 9.3550247129566696e+02;
 double cx = 3.2389824020348124e+02;
 double cy = 2.1394131657430057e+02;
 
-class EdgeProjectXYZ2UVPoseOnly: public g2o::BaseUnaryEdge<2, Eigen::Vector2d, g2o::VertexSE3Expmap >
+// g2o vertex that use sophus::SE3 as pose
+class VertexSophus : public g2o::BaseVertex<6, Sophus::SE3> {
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    VertexSophus() {}
+    ~VertexSophus() {}
+
+    bool read(std::istream &is) {}
+    bool write(std::ostream &os) const {}
+
+    virtual void setToOriginImpl() {
+        _estimate = Sophus::SE3();
+    }
+
+    virtual void oplusImpl(const double *update_) {
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>> update(update_);
+        setEstimate(Sophus::SE3::exp(update) * estimate());
+    }
+};
+
+class EdgeProjectXYZ2UVPoseOnly: public g2o::BaseUnaryEdge<2, Eigen::Vector2d, VertexSophus >
 {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -81,9 +103,11 @@ public:
 
 void EdgeProjectXYZ2UVPoseOnly::computeError()
 {
-    const g2o::VertexSE3Expmap* g2o_pose = static_cast<const g2o::VertexSE3Expmap*> ( _vertices[0] );
-
-    Eigen::Vector3d p_c =  g2o_pose->estimate().map(point_);
+    // compute projection error ...
+    // const g2o::VertexSE3Expmap* g2o_pose = static_cast<const g2o::VertexSE3Expmap*> ( _vertices[0] );
+    const VertexSophus *vertexTcw = static_cast<const VertexSophus*>( vertex(0) );
+    // Eigen::Vector3d p_c =  g2o_pose->estimate().map(point_);
+    Eigen::Vector3d p_c = vertexTcw->estimate()*point_;
     Eigen::Vector2d p_uv = Eigen::Vector2d (
         fx * p_c ( 0,0 ) / p_c ( 2,0 ) + cx,
         fy * p_c ( 1,0 ) / p_c ( 2,0 ) + cy
@@ -94,9 +118,10 @@ void EdgeProjectXYZ2UVPoseOnly::computeError()
 
 void EdgeProjectXYZ2UVPoseOnly::linearizeOplus()
 {
-    g2o::VertexSE3Expmap* g2o_pose = static_cast<g2o::VertexSE3Expmap*> ( _vertices[0] );
-    g2o::SE3Quat T ( g2o_pose->estimate() );
-    Eigen::Vector3d xyz_trans = T.map ( point_ );
+    // g2o::VertexSE3Expmap* g2o_pose = static_cast<g2o::VertexSE3Expmap*> ( _vertices[0] );
+    const VertexSophus* vertexTcw = static_cast<const VertexSophus* >( vertex(0) );
+    // g2o::SE3Quat T ( g2o_pose->estimate() );
+    Eigen::Vector3d xyz_trans = vertexTcw->estimate()*point_;
     double x = xyz_trans[0];
     double y = xyz_trans[1];
     double z = xyz_trans[2];
@@ -159,10 +184,10 @@ int main(int argc, char *argv[])
 
     apriltag_detection_info_t info;
     info.tagsize = 13.8; //cm
-    info.fx = 9.7185090185201193e+02;
-    info.fy = 9.3550247129566696e+02;
-    info.cx = 3.2389824020348124e+02;
-    info.cy = 2.1394131657430057e+02;
+    info.fx = fx;
+    info.fy = fy;
+    info.cx = cx;
+    info.cy = cy;
 
     double scale = info.tagsize/2.0;  // apriltag 4-corner 3d points 
 
@@ -234,6 +259,10 @@ int main(int argc, char *argv[])
             // cout << pose.R->data[0] <<" "<< pose.R->data[1] << " " << pose.R->data[2] << endl;  //3*3
             // cout << pose.R->data[3] <<" "<< pose.R->data[4] << " " << pose.R->data[5] << endl;  //3*3
             // cout << pose.R->data[6] <<" "<< pose.R->data[7] << " " << pose.R->data[8] << endl;  //3*3
+            for( int i = 0; i < 4; i++ ){
+                tagpixels.push_back( Eigen::Vector2d(det->p[i][0], det->p[i][1]) );
+            }
+
             cv::line(frame, cv::Point(det->p[0][0], det->p[0][1]),
                      cv::Point(det->p[1][0], det->p[1][1]),
                      cv::Scalar(0xff, 0xff, 0xff), 2);
@@ -357,13 +386,21 @@ int main(int argc, char *argv[])
             g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg ( solver_ptr );
             g2o::SparseOptimizer optimizer;
             optimizer.setAlgorithm ( solver );
+
+
+            // add pose vertices
+            VertexSophus* vertexTcw = new VertexSophus();
+            vertexTcw->setEstimate( SE3_Rt );
+            vertexTcw->setId( 0 );
+            optimizer.addVertex( vertexTcw );
+  
             
-            g2o::VertexSE3Expmap* g2o_pose = new g2o::VertexSE3Expmap();
-            g2o_pose->setId ( 0 );
-            g2o_pose->setEstimate ( g2o::SE3Quat (
-                cam_R, cam_t
-            ));
-            optimizer.addVertex ( g2o_pose );
+            // g2o::VertexSE3Expmap* g2o_pose = new g2o::VertexSE3Expmap();
+            // g2o_pose->setId ( 0 );
+            // g2o_pose->setEstimate ( g2o::SE3Quat (
+            //     cam_R, cam_t
+            // ));
+            // optimizer.addVertex ( g2o_pose );
 
             // edges
             for ( int i=0; i<4; i++ )
@@ -371,10 +408,10 @@ int main(int argc, char *argv[])
                 // 3D -> 2D projection
                 EdgeProjectXYZ2UVPoseOnly* edge = new EdgeProjectXYZ2UVPoseOnly();
                 edge->setId ( i );
-                edge->setVertex ( 0, g2o_pose );
+                edge->setVertex ( 0, vertexTcw );
           
                 edge->point_ = tagpoints[i];
-                edge->setMeasurement ( Eigen::Vector2d ( det->p[0][0], det->p[0][0] ) );
+                edge->setMeasurement ( Eigen::Vector2d ( det->p[i][0], det->p[i][1] ) );
                 edge->setInformation ( Eigen::Matrix2d::Identity() );
                 optimizer.addEdge ( edge );
             }
@@ -383,11 +420,7 @@ int main(int argc, char *argv[])
             optimizer.optimize ( 10 );
 
 
-            Sophus::SE3 T_c_w_estimated_ = Sophus::SE3 (
-                g2o_pose->estimate().rotation(),
-                g2o_pose->estimate().translation()
-            );
-
+            Sophus::SE3 T_c_w_estimated_ = dynamic_cast<VertexSophus*>( optimizer.vertex(0) )->estimate();
 
             poses.push_back( T_c_w_estimated_ );
 
@@ -402,6 +435,8 @@ int main(int argc, char *argv[])
         if (cv::waitKey(30) == 'q')
             break;
     }
+    // optimizer.initializeOptimization();
+    // optimizer.optimize ( 10 );
 
     // double scale = info.tagsize/2.0;  // apriltag 4-corner 3d points 
 
