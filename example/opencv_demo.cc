@@ -104,9 +104,7 @@ public:
 void EdgeProjectXYZ2UVPoseOnly::computeError()
 {
     // compute projection error ...
-    // const g2o::VertexSE3Expmap* g2o_pose = static_cast<const g2o::VertexSE3Expmap*> ( _vertices[0] );
     const VertexSophus *vertexTcw = static_cast<const VertexSophus*>( vertex(0) );
-    // Eigen::Vector3d p_c =  g2o_pose->estimate().map(point_);
     Eigen::Vector3d p_c = vertexTcw->estimate()*point_;
     Eigen::Vector2d p_uv = Eigen::Vector2d (
         fx * p_c ( 0,0 ) / p_c ( 2,0 ) + cx,
@@ -118,9 +116,7 @@ void EdgeProjectXYZ2UVPoseOnly::computeError()
 
 void EdgeProjectXYZ2UVPoseOnly::linearizeOplus()
 {
-    // g2o::VertexSE3Expmap* g2o_pose = static_cast<g2o::VertexSE3Expmap*> ( _vertices[0] );
     const VertexSophus* vertexTcw = static_cast<const VertexSophus* >( vertex(0) );
-    // g2o::SE3Quat T ( g2o_pose->estimate() );
     Eigen::Vector3d xyz_trans = vertexTcw->estimate()*point_;
     double x = xyz_trans[0];
     double y = xyz_trans[1];
@@ -259,9 +255,7 @@ int main(int argc, char *argv[])
             // cout << pose.R->data[0] <<" "<< pose.R->data[1] << " " << pose.R->data[2] << endl;  //3*3
             // cout << pose.R->data[3] <<" "<< pose.R->data[4] << " " << pose.R->data[5] << endl;  //3*3
             // cout << pose.R->data[6] <<" "<< pose.R->data[7] << " " << pose.R->data[8] << endl;  //3*3
-            for( int i = 0; i < 4; i++ ){
-                tagpixels.push_back( Eigen::Vector2d(det->p[i][0], det->p[i][1]) );
-            }
+
 
             cv::line(frame, cv::Point(det->p[0][0], det->p[0][1]),
                      cv::Point(det->p[1][0], det->p[1][1]),
@@ -375,59 +369,13 @@ int main(int argc, char *argv[])
             double H22 = MATD_EL(det->H, 2, 2);
             // cout << "H = " << H00 << " " << H01 << endl;
             
-
-
-            Sophus::SE3 SE3_Rt( cam_R, cam_t );
-
-            // using bundle adjustment to optimize the pose
-            typedef g2o::BlockSolver<g2o::BlockSolverTraits<6,2>> Block;
-            Block::LinearSolverType* linearSolver = new g2o::LinearSolverDense<Block::PoseMatrixType>();
-            Block* solver_ptr = new Block( linearSolver );
-            g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg ( solver_ptr );
-            g2o::SparseOptimizer optimizer;
-            optimizer.setAlgorithm ( solver );
-
-
-            // add pose vertices
-            VertexSophus* vertexTcw = new VertexSophus();
-            vertexTcw->setEstimate( SE3_Rt );
-            vertexTcw->setId( 0 );
-            optimizer.addVertex( vertexTcw );
-  
-            
-            // g2o::VertexSE3Expmap* g2o_pose = new g2o::VertexSE3Expmap();
-            // g2o_pose->setId ( 0 );
-            // g2o_pose->setEstimate ( g2o::SE3Quat (
-            //     cam_R, cam_t
-            // ));
-            // optimizer.addVertex ( g2o_pose );
-
-            // edges
-            for ( int i=0; i<4; i++ )
-            {
-                // 3D -> 2D projection
-                EdgeProjectXYZ2UVPoseOnly* edge = new EdgeProjectXYZ2UVPoseOnly();
-                edge->setId ( i );
-                edge->setVertex ( 0, vertexTcw );
-          
-                edge->point_ = tagpoints[i];
-                edge->setMeasurement ( Eigen::Vector2d ( det->p[i][0], det->p[i][1] ) );
-                edge->setInformation ( Eigen::Matrix2d::Identity() );
-                optimizer.addEdge ( edge );
+            for( int i = 0; i < 4; i++ ){
+                tagpixels.push_back( Eigen::Vector2d(det->p[i][0], det->p[i][1]) );
             }
-            
-            optimizer.initializeOptimization();
-            optimizer.optimize ( 10 );
-
-
-            Sophus::SE3 T_c_w_estimated_ = dynamic_cast<VertexSophus*>( optimizer.vertex(0) )->estimate();
-
-            poses.push_back( T_c_w_estimated_ );
+            Sophus::SE3 SE3_Rt( cam_R, cam_t );
+            poses.push_back( SE3_Rt );
 
         }
-        
-
-
         apriltag_detections_destroy(detections);
 
         imshow("Tag Detections", frame);
@@ -435,10 +383,47 @@ int main(int argc, char *argv[])
         if (cv::waitKey(30) == 'q')
             break;
     }
-    // optimizer.initializeOptimization();
-    // optimizer.optimize ( 10 );
+    // using bundle adjustment to optimize the pose
+    typedef g2o::BlockSolver<g2o::BlockSolverTraits<6,2>> Block;
+    Block::LinearSolverType* linearSolver = new g2o::LinearSolverDense<Block::PoseMatrixType>();
+    Block* solver_ptr = new Block( linearSolver );
+    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg ( solver_ptr );
+    g2o::SparseOptimizer optimizer;
+    optimizer.setAlgorithm ( solver );
 
-    // double scale = info.tagsize/2.0;  // apriltag 4-corner 3d points 
+
+    // add pose vertices
+    for( int j = 0; j < poses.size(); j++ ){
+        VertexSophus* vertexTcw = new VertexSophus();
+        vertexTcw->setEstimate( poses[j] );
+        vertexTcw->setId( j );
+        optimizer.addVertex( vertexTcw );
+    }
+
+
+    // edges
+    for( int c = 0; c < poses.size(); c++ )
+        for ( int i=0; i<4; i++ ){
+            // 3D -> 2D projection
+            EdgeProjectXYZ2UVPoseOnly* edge = new EdgeProjectXYZ2UVPoseOnly();
+            // edge->setId ( i );
+            edge->setVertex ( 0, dynamic_cast<VertexSophus*>(optimizer.vertex(c)) );
+            edge->point_ = tagpoints[i];
+            edge->setMeasurement ( tagpixels[c*4 + i] );
+            edge->setInformation ( Eigen::Matrix2d::Identity() );
+            optimizer.addEdge ( edge );
+        }
+    
+    optimizer.initializeOptimization();
+    optimizer.optimize ( 10 );
+
+    // fetch data from the optimizer
+    for(int c = 0; c < poses.size(); c++){
+        // Eigen::Vector3d Pw = dynamic_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(p))->estimate();
+        // points[p] = Pw;
+        Sophus::SE3 Tcw = dynamic_cast<VertexSophus*>( optimizer.vertex(c) )->estimate();
+        poses[c] = Tcw;
+    }
 
     points.push_back( Eigen::Vector3d ( -scale,  scale, 0 ) );
     points.push_back( Eigen::Vector3d (  scale,  scale, 0 ) );
