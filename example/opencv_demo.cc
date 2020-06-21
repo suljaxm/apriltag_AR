@@ -40,19 +40,22 @@ extern "C" {
 #include "tag36h11.h"
 #include "common/getopt.h"
 }
+#include <math.h>
 
-#include <g2o/core/base_vertex.h>
-#include <g2o/core/base_unary_edge.h>
-#include <g2o/core/block_solver.h>
-#include <g2o/core/optimization_algorithm_levenberg.h>
-#include <g2o/types/sba/types_six_dof_expmap.h>
-#include <g2o/solvers/dense/linear_solver_dense.h>
-#include <g2o/core/robust_kernel.h>
-#include <g2o/core/robust_kernel_impl.h>
+// #include <g2o/core/base_vertex.h>
+// #include <g2o/core/base_unary_edge.h>
+// #include <g2o/core/block_solver.h>
+// #include <g2o/core/optimization_algorithm_levenberg.h>
+// #include <g2o/types/sba/types_six_dof_expmap.h>
+// #include <g2o/solvers/dense/linear_solver_dense.h>
+// #include <g2o/core/robust_kernel.h>
+// #include <g2o/core/robust_kernel_impl.h>
 
 
 Eigen::Matrix3d cam_R;
 Eigen::Vector3d cam_t;
+Eigen::Vector3d t_last, t_curr;
+double update_t = 0;
 
 typedef std::vector<Sophus::SE3, Eigen::aligned_allocator<Sophus::SE3> > VecSE3;
 typedef std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > VecVec3d;
@@ -66,80 +69,89 @@ double fy = 9.3550247129566696e+02;
 double cx = 3.2389824020348124e+02;
 double cy = 2.1394131657430057e+02;
 
-// g2o vertex that use sophus::SE3 as pose
-class VertexSophus : public g2o::BaseVertex<6, Sophus::SE3> {
-public:
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+#define RATIO 0.4 // orb 
 
-    VertexSophus() {}
-    ~VertexSophus() {}
+// // g2o vertex that use sophus::SE3 as pose
+// class VertexSophus : public g2o::BaseVertex<6, Sophus::SE3> {
+// public:
+//     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    bool read(std::istream &is) {}
-    bool write(std::ostream &os) const {}
+//     VertexSophus() {}
+//     ~VertexSophus() {}
 
-    virtual void setToOriginImpl() {
-        _estimate = Sophus::SE3();
-    }
+//     bool read(std::istream &is) {}
+//     bool write(std::ostream &os) const {}
 
-    virtual void oplusImpl(const double *update_) {
-        Eigen::Map<const Eigen::Matrix<double, 6, 1>> update(update_);
-        setEstimate(Sophus::SE3::exp(update) * estimate());
-    }
-};
+//     virtual void setToOriginImpl() {
+//         _estimate = Sophus::SE3();
+//     }
 
-class EdgeProjectXYZ2UVPoseOnly: public g2o::BaseUnaryEdge<2, Eigen::Vector2d, VertexSophus >
-{
-public:
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+//     virtual void oplusImpl(const double *update_) {
+//         Eigen::Map<const Eigen::Matrix<double, 6, 1>> update(update_);
+//         setEstimate(Sophus::SE3::exp(update) * estimate());
+//     }
+// };
+
+// class EdgeProjectXYZ2UVPoseOnly: public g2o::BaseUnaryEdge<2, Eigen::Vector2d, VertexSophus >
+// {
+// public:
+//     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     
-    virtual void computeError();
-    virtual void linearizeOplus();
+//     virtual void computeError();
+//     virtual void linearizeOplus();
     
-    virtual bool read( std::istream& in ){}
-    virtual bool write(std::ostream& os) const {};
+//     virtual bool read( std::istream& in ){}
+//     virtual bool write(std::ostream& os) const {};
     
-    Eigen::Vector3d point_;
-};
+//     Eigen::Vector3d point_;
+// };
 
-void EdgeProjectXYZ2UVPoseOnly::computeError()
-{
-    // compute projection error ...
-    const VertexSophus *vertexTcw = static_cast<const VertexSophus*>( vertex(0) );
-    Eigen::Vector3d p_c = vertexTcw->estimate()*point_;
-    Eigen::Vector2d p_uv = Eigen::Vector2d (
-        fx * p_c ( 0,0 ) / p_c ( 2,0 ) + cx,
-        fy * p_c ( 1,0 ) / p_c ( 2,0 ) + cy
-    );
+// void EdgeProjectXYZ2UVPoseOnly::computeError()
+// {
+//     // compute projection error ...
+//     const VertexSophus *vertexTcw = static_cast<const VertexSophus*>( vertex(0) );
+//     Eigen::Vector3d p_c = vertexTcw->estimate()*point_;
+//     Eigen::Vector2d p_uv = Eigen::Vector2d (
+//         fx * p_c ( 0,0 ) / p_c ( 2,0 ) + cx,
+//         fy * p_c ( 1,0 ) / p_c ( 2,0 ) + cy
+//     );
 
-    _error = _measurement - p_uv;
-}
+//     _error = _measurement - p_uv;
+// }
 
-void EdgeProjectXYZ2UVPoseOnly::linearizeOplus()
-{
-    const VertexSophus* vertexTcw = static_cast<const VertexSophus* >( vertex(0) );
-    Eigen::Vector3d xyz_trans = vertexTcw->estimate()*point_;
-    double x = xyz_trans[0];
-    double y = xyz_trans[1];
-    double z = xyz_trans[2];
-    double z_2 = z*z;
+// void EdgeProjectXYZ2UVPoseOnly::linearizeOplus()
+// {
+//     const VertexSophus* vertexTcw = static_cast<const VertexSophus* >( vertex(0) );
+//     Eigen::Vector3d xyz_trans = vertexTcw->estimate()*point_;
+//     double x = xyz_trans[0];
+//     double y = xyz_trans[1];
+//     double z = xyz_trans[2];
+//     double z_2 = z*z;
 
-    _jacobianOplusXi ( 0,0 ) =  x*y/z_2 *fx;
-    _jacobianOplusXi ( 0,1 ) = - ( 1+ ( x*x/z_2 ) ) *fx;
-    _jacobianOplusXi ( 0,2 ) = y/z * fx;
-    _jacobianOplusXi ( 0,3 ) = -1./z *fx;
-    _jacobianOplusXi ( 0,4 ) = 0;
-    _jacobianOplusXi ( 0,5 ) = x/z_2 *fx;
+//     _jacobianOplusXi ( 0,0 ) =  x*y/z_2 *fx;
+//     _jacobianOplusXi ( 0,1 ) = - ( 1+ ( x*x/z_2 ) ) *fx;
+//     _jacobianOplusXi ( 0,2 ) = y/z * fx;
+//     _jacobianOplusXi ( 0,3 ) = -1./z *fx;
+//     _jacobianOplusXi ( 0,4 ) = 0;
+//     _jacobianOplusXi ( 0,5 ) = x/z_2 *fx;
 
-    _jacobianOplusXi ( 1,0 ) = ( 1+y*y/z_2 ) *fy;
-    _jacobianOplusXi ( 1,1 ) = -x*y/z_2 *fy;
-    _jacobianOplusXi ( 1,2 ) = -x/z *fy;
-    _jacobianOplusXi ( 1,3 ) = 0;
-    _jacobianOplusXi ( 1,4 ) = -1./z *fy;
-    _jacobianOplusXi ( 1,5 ) = y/z_2 *fy;
-}
+//     _jacobianOplusXi ( 1,0 ) = ( 1+y*y/z_2 ) *fy;
+//     _jacobianOplusXi ( 1,1 ) = -x*y/z_2 *fy;
+//     _jacobianOplusXi ( 1,2 ) = -x/z *fy;
+//     _jacobianOplusXi ( 1,3 ) = 0;
+//     _jacobianOplusXi ( 1,4 ) = -1./z *fy;
+//     _jacobianOplusXi ( 1,5 ) = y/z_2 *fy;
+// }
 
 // plot the poses and points for you, need pangolin
 void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_info_t &info);
+
+void triangulation (
+    const std::vector<cv::KeyPoint>& keypoint_1,
+    const std::vector<cv::KeyPoint>& keypoint_2,
+    const std::vector< cv::DMatch >& matches,
+    cv::Mat T1, cv::Mat T2,
+    std::vector<cv::Point3d>& points);
 
 int main(int argc, char *argv[])
 {
@@ -162,7 +174,7 @@ int main(int argc, char *argv[])
     }
 
     // Initialize camera
-    cv::VideoCapture cap(1);
+    cv::VideoCapture cap(0);
     if (!cap.isOpened()) {
         std::cerr << "Couldn't open video capture device" << std::endl;
         return -1;
@@ -216,11 +228,26 @@ int main(int argc, char *argv[])
     cv::Mat frame, gray;
     VecSE3 poses;
     VecVec3d points;
+    std::vector<cv::Point3d> points_cv;
 
+    
+    cv::Mat last_img, cur_img;
+    cv::Mat T1, T2;
+        // cv::Mat T1 = (cv::Mat_<double> (3,4) <<
+    //     1,0,0,0,
+    //     0,1,0,0,
+    //     0,0,1,0);
+    // cv::Mat T2 = (cv::Mat_<double> (3,4) <<
+    //     R.at<double>(0,0), R.at<double>(0,1), R.at<double>(0,2), t.at<double>(0,0),
+    //     R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2), t.at<double>(1,0),
+    //     R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2), t.at<double>(2,0)
+    //     );
+    bool initial = false;
+    int limit_min_times = 0;
     while (true) {
         cap >> frame;
         cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-
+        
         // Make an image_u8_t header for the Mat data
         image_u8_t im = { .width = gray.cols,
             .height = gray.rows,
@@ -233,6 +260,8 @@ int main(int argc, char *argv[])
 
         // Draw detection outlines
         for (int i = 0; i < zarray_size(detections); i++) {
+            limit_min_times++;
+
             apriltag_detection_t *det;
             zarray_get(detections, i, &det);
             info.det = det; 
@@ -246,6 +275,37 @@ int main(int argc, char *argv[])
             wy = pose.t->data[1]*scale;
             wz = pose.t->data[2]*scale;
 			// cout << wx <<"  "<< wy << " " << wz << endl;
+
+
+            if( !initial ){
+                last_img = gray.clone();
+                cur_img = gray.clone();
+                T1 = (cv::Mat_<double> (3,4) <<
+                    pose.R->data[0], pose.R->data[1], pose.R->data[2], pose.t->data[0],
+                    pose.R->data[3], pose.R->data[4], pose.R->data[5], pose.t->data[1],
+                    pose.R->data[6], pose.R->data[7], pose.R->data[8], pose.t->data[2]
+                    );
+                T2 = (cv::Mat_<double> (3,4) <<
+                    pose.R->data[0], pose.R->data[1], pose.R->data[2], pose.t->data[0],
+                    pose.R->data[3], pose.R->data[4], pose.R->data[5], pose.t->data[1],
+                    pose.R->data[6], pose.R->data[7], pose.R->data[8], pose.t->data[2]
+                    );
+                // initial = true;
+                if( limit_min_times > 10){
+                    initial = true;
+                }
+            }else{
+                // std::cout << "initial is ok!!!!" << "\n";
+                cur_img = gray.clone();
+                T2 = (cv::Mat_<double> (3,4) <<
+                    pose.R->data[0], pose.R->data[1], pose.R->data[2], pose.t->data[0],
+                    pose.R->data[3], pose.R->data[4], pose.R->data[5], pose.t->data[1],
+                    pose.R->data[6], pose.R->data[7], pose.R->data[8], pose.t->data[2]
+                    );
+            }
+            // std::cout << "initial:" << initial << "||" << T1.size() << "||" << T2.size() << "\n";
+            // std::cout << "last_img" << last_img.size() << " cur_img" << cur_img.size() << "\n";
+
             
             double depth = sqrt( wx*wx + wy*wy + wz*wz );
             
@@ -330,7 +390,7 @@ int main(int argc, char *argv[])
             }else{
                 for ( auto &p:cubePoints ){
                     p = p*5;
-                }   
+                }
                 cv::eigen2cv(cam_R, cv_cam_R);
                 cv::eigen2cv(cam_t, cv_cam_t);
                 cv::projectPoints(cubePoints, cv_cam_R, cv_cam_t, m_camera_matrix, m_dist_coeff, imagePoints);
@@ -375,7 +435,87 @@ int main(int argc, char *argv[])
             Sophus::SE3 SE3_Rt( cam_R, cam_t );
             poses.push_back( SE3_Rt );
 
+            // last_img = gray.clone();
+            // cur_img = gray.clone();
+
+            if( initial ){
+                // ORB Features
+                std::vector<cv::KeyPoint> keypoints_sence, keypoints_obj;
+                cv::Mat descriptors_box, descriptors_sence;
+                cv::Ptr<cv::ORB> detector = cv::ORB::create();
+
+                detector->detectAndCompute(last_img, cv::Mat(), keypoints_sence, descriptors_sence);
+                detector->detectAndCompute(cur_img, cv::Mat(), keypoints_obj, descriptors_box);
+                std::vector<cv::DMatch> matches;
+                // 初始化flann匹配
+                // cv::Ptr<cv::FlannBasedMatcher> matcher = cv::FlannBasedMatcher::create(); // default is bad, using local sensitive hash(LSH)
+                cv::Ptr<cv::DescriptorMatcher> matcher = cv::makePtr<cv::FlannBasedMatcher>(cv::makePtr<cv::flann::LshIndexParams>(12, 20, 2));
+                matcher->match(descriptors_box, descriptors_sence, matches);
+                // 发现匹配
+                std::vector<cv::DMatch> goodMatches;
+                
+                float maxdist = 0;
+                for (unsigned int i = 0; i < matches.size(); ++i) {
+                    // printf("dist : %.2f \n", matches[i].distance);
+                    maxdist = cv::max(maxdist, matches[i].distance);
+                }
+                for (unsigned int i = 0; i < matches.size(); ++i) {
+                    if (matches[i].distance < maxdist*RATIO)
+                        goodMatches.push_back(matches[i]);
+                }
+
+                // cv::Mat dst;
+                // cv::drawMatches(cur_img, keypoints_obj, last_img, keypoints_sence, goodMatches, dst);
+                // cv::imshow("output", dst);
+                // cv::waitKey(0);
+                // cv::Mat R_cv = (cv::Mat_<double> (3,3) <<
+                //     pose.R->data[0], pose.R->data[1], pose.R->data[2],
+                //     pose.R->data[3], pose.R->data[4], pose.R->data[5],
+                //     pose.R->data[6], pose.R->data[7], pose.R->data[8]);
+                
+                // cv::Mat t_cv = (cv::Mat_<double> (3,1) <<
+                //     wx, wy, wz);
+                
+                // std::cout << R_cv << "\n";
+                // std::cout << t_cv << "\n";
+                // std::cout << "keypoints_sence:" << keypoints_sence.size() << "\n";
+                // std::cout << "keypoints_obj:" << keypoints_obj.size() << "\n";
+                // std::cout << "T1:" << T1 << "\n\n";
+                // std::cout << "T2:" << T2 << "\n";
+                // printf("total match points : %d || goodMatches: %d\n", matches.size(), goodMatches.size());
+                
+                // 绘制关键点
+                // cv::Mat keypoint_img;
+                cv::drawKeypoints(frame, keypoints_obj, frame, cv::Scalar::all(-1), cv::DrawMatchesFlags::DEFAULT);
+                // cv::imshow("KeyPoints Image", keypoint_img);
+
+
+                
+                t_last << T1.at<double>(0,3), T1.at<double>(1,3), T1.at<double>(2,3);
+                t_curr << T2.at<double>(0,3), T2.at<double>(1,3), T2.at<double>(2,3);
+                Eigen::Vector3d t_tmp = t_last - t_curr;
+                update_t = fabsf(t_tmp[0]) + fabsf(t_tmp[1]) + fabsf(t_tmp[2]);
+                std::cout << "update_t:"<< update_t << "\n";
+                // std::cout << "t_last:" << t_last << "\n";
+                // std::cout << "t_curr:" << t_curr << "\n";
+                if(goodMatches.size()>0 && update_t > 10){
+                    // std::cout << "keypoints_sence:" << keypoints_sence.size() << "\n";
+                    // std::cout << "keypoints_obj:" << keypoints_obj.size() << "\n";
+                    // std::cout << "T1:" << T1 << "\n";
+                    // std::cout << "T2:" << T2 << "\n";
+                    triangulation ( keypoints_sence, keypoints_obj, goodMatches, T1, T2, points_cv );
+                }
+            }
         }
+        if(update_t > 10){
+            last_img = cur_img.clone();
+            T1 = T2.clone();
+        }
+
+    
+
+        
+        
         apriltag_detections_destroy(detections);
 
         imshow("Tag Detections", frame);
@@ -383,52 +523,54 @@ int main(int argc, char *argv[])
         if (cv::waitKey(30) == 'q')
             break;
     }
-    // using bundle adjustment to optimize the pose
-    typedef g2o::BlockSolver<g2o::BlockSolverTraits<6,2>> Block;
-    Block::LinearSolverType* linearSolver = new g2o::LinearSolverDense<Block::PoseMatrixType>();
-    Block* solver_ptr = new Block( linearSolver );
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg ( solver_ptr );
-    g2o::SparseOptimizer optimizer;
-    optimizer.setAlgorithm ( solver );
+    // // using bundle adjustment to optimize the pose
+    // typedef g2o::BlockSolver<g2o::BlockSolverTraits<6,2>> Block;
+    // Block::LinearSolverType* linearSolver = new g2o::LinearSolverDense<Block::PoseMatrixType>();
+    // Block* solver_ptr = new Block( linearSolver );
+    // g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg ( solver_ptr );
+    // g2o::SparseOptimizer optimizer;
+    // optimizer.setAlgorithm ( solver );
 
 
-    // add pose vertices
-    for( int j = 0; j < poses.size(); j++ ){
-        VertexSophus* vertexTcw = new VertexSophus();
-        vertexTcw->setEstimate( poses[j] );
-        vertexTcw->setId( j );
-        optimizer.addVertex( vertexTcw );
-    }
+    // // add pose vertices
+    // for( int j = 0; j < poses.size(); j++ ){
+    //     VertexSophus* vertexTcw = new VertexSophus();
+    //     vertexTcw->setEstimate( poses[j] );
+    //     vertexTcw->setId( j );
+    //     optimizer.addVertex( vertexTcw );
+    // }
 
-
-    // edges
-    for( int c = 0; c < poses.size(); c++ )
-        for ( int i=0; i<4; i++ ){
-            // 3D -> 2D projection
-            EdgeProjectXYZ2UVPoseOnly* edge = new EdgeProjectXYZ2UVPoseOnly();
-            // edge->setId ( i );
-            edge->setVertex ( 0, dynamic_cast<VertexSophus*>(optimizer.vertex(c)) );
-            edge->point_ = tagpoints[i];
-            edge->setMeasurement ( tagpixels[c*4 + i] );
-            edge->setInformation ( Eigen::Matrix2d::Identity() );
-            optimizer.addEdge ( edge );
-        }
+    // // edges
+    // for( int c = 0; c < poses.size(); c++ )
+    //     for ( int i=0; i<4; i++ ){
+    //         // 3D -> 2D projection
+    //         EdgeProjectXYZ2UVPoseOnly* edge = new EdgeProjectXYZ2UVPoseOnly();
+    //         // edge->setId ( i );
+    //         edge->setVertex ( 0, dynamic_cast<VertexSophus*>(optimizer.vertex(c)) );
+    //         edge->point_ = tagpoints[i];
+    //         edge->setMeasurement ( tagpixels[c*4 + i] );
+    //         edge->setInformation ( Eigen::Matrix2d::Identity() );
+    //         optimizer.addEdge ( edge );
+    //     }
     
-    optimizer.initializeOptimization();
-    optimizer.optimize ( 10 );
+    // optimizer.initializeOptimization();
+    // optimizer.optimize ( 10 );
 
-    // fetch data from the optimizer
-    for(int c = 0; c < poses.size(); c++){
-        // Eigen::Vector3d Pw = dynamic_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(p))->estimate();
-        // points[p] = Pw;
-        Sophus::SE3 Tcw = dynamic_cast<VertexSophus*>( optimizer.vertex(c) )->estimate();
-        poses[c] = Tcw;
+    // // fetch data from the optimizer
+    // for(int c = 0; c < poses.size(); c++){
+    //     // Eigen::Vector3d Pw = dynamic_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(p))->estimate();
+    //     // points[p] = Pw;
+    //     Sophus::SE3 Tcw = dynamic_cast<VertexSophus*>( optimizer.vertex(c) )->estimate();
+    //     poses[c] = Tcw;
+    // }
+
+    for(int pt_indx = 0; pt_indx < points_cv.size(); pt_indx++){
+        points.push_back( Eigen::Vector3d ( points_cv[pt_indx].x,  points_cv[pt_indx].y, points_cv[pt_indx].z ) );
     }
-
-    points.push_back( Eigen::Vector3d ( -scale,  scale, 0 ) );
-    points.push_back( Eigen::Vector3d (  scale,  scale, 0 ) );
-    points.push_back( Eigen::Vector3d (  scale, -scale, 0 ) );
-    points.push_back( Eigen::Vector3d ( -scale, -scale, 0 ) );
+    // points.push_back( Eigen::Vector3d ( -scale,  scale, 0 ) );
+    // points.push_back( Eigen::Vector3d (  scale,  scale, 0 ) );
+    // points.push_back( Eigen::Vector3d (  scale, -scale, 0 ) );
+    // points.push_back( Eigen::Vector3d ( -scale, -scale, 0 ) );
 
     Draw(poses, points, info);
     apriltag_detector_destroy(td);
@@ -440,6 +582,68 @@ int main(int argc, char *argv[])
     getopt_destroy(getopt);
 
     return 0;
+}
+
+
+cv::Point2d pixel2cam ( const cv::Point2d& p, const cv::Mat& K )
+{
+   return cv::Point2d
+          (
+              ( p.x - K.at<double> ( 0,2 ) ) / K.at<double> ( 0,0 ),
+              ( p.y - K.at<double> ( 1,2 ) ) / K.at<double> ( 1,1 )
+          );
+}
+
+
+
+void triangulation (
+    const std::vector<cv::KeyPoint>& keypoint_1,
+    const std::vector<cv::KeyPoint>& keypoint_2,
+    const std::vector< cv::DMatch >& matches,
+    cv::Mat T1, cv::Mat T2,
+    std::vector<cv::Point3d>& points)
+{
+    // cv::Mat T1 = (cv::Mat_<double> (3,4) <<
+    //     1,0,0,0,
+    //     0,1,0,0,
+    //     0,0,1,0);
+    // cv::Mat T2 = (cv::Mat_<double> (3,4) <<
+    //     R.at<double>(0,0), R.at<double>(0,1), R.at<double>(0,2), t.at<double>(0,0),
+    //     R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2), t.at<double>(1,0),
+    //     R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2), t.at<double>(2,0)
+    //     );
+
+        // info.fx,    0.0,       info.cx,
+        // 0.0,        info.fy,   info.cy,
+        // 0.0,        0.0,       1.0
+    cv::Mat K = ( cv::Mat_<double> ( 3,3 ) << fx, 0, cx, 0, fy, cy, 0, 0, 1 );
+
+    std::vector<cv::Point2d> pts_1, pts_2;
+    for ( cv::DMatch m:matches )
+    {
+        // 将像素坐标转换至相机坐标
+        pts_1.push_back ( pixel2cam( keypoint_1[m.queryIdx].pt, K) );
+        pts_2.push_back ( pixel2cam( keypoint_2[m.trainIdx].pt, K) );
+    }
+
+    cv::Mat pts_4d;
+    cv::triangulatePoints( T1, T2, pts_1, pts_2, pts_4d );
+
+    // 转换成非齐次坐标
+    for ( int i=0; i<pts_4d.cols; i++ )
+    {
+        cv::Mat x = pts_4d.col(i);
+
+        if(x.at<float>(3,0) < 1.0) continue;
+        
+        x /= x.at<float>(3,0); // 归一化
+        cv::Point3d p (
+            x.at<float>(0,0),
+            x.at<float>(1,0),
+            x.at<float>(2,0)
+        );
+        points.push_back( p );
+    }
 }
 
 void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_info_t &info) {
@@ -510,7 +714,7 @@ void Draw(const VecSE3 &poses, const VecVec3d &points, const apriltag_detection_
         glPointSize(2);
         glBegin(GL_POINTS);
         for (size_t i = 0; i < points.size(); i++) {
-            glColor3f(0.0, points[i][2]/4, 1.0-points[i][2]/4);
+            glColor3f(0.0, 1, 0);
             glVertex3d(points[i][0], points[i][1], points[i][2]);
         }
         glEnd();
